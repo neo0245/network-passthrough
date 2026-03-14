@@ -33,6 +33,10 @@ build_target() {
   cp "$ROOT/docs/USER_MANUAL.md" "$stage/"
   cp "$ROOT/docs/RELEASE_NOTES_v0.1.0.md" "$stage/"
   cp "$ROOT/README.md" "$stage/"
+  if [[ "$goos" == "linux" ]]; then
+    mkdir -p "$stage/deploy/systemd"
+    cp "$ROOT/deploy/systemd/slppd.service" "$stage/deploy/systemd/"
+  fi
 
   if [[ "$archive" == *.zip ]]; then
     (cd "$DIST" && zip -rq "$archive" "$label")

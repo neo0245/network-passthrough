@@ -14,6 +14,7 @@ The CLI ships as two programs:
 - [User Manual](docs/USER_MANUAL.md)
 - [Release Notes v0.1.0](docs/RELEASE_NOTES_v0.1.0.md)
 - [Testing Guide](TESTING.md)
+- [Linux systemd unit](deploy/systemd/slppd.service)
 
 ## Build
 

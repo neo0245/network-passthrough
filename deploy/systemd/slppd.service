@@ -1,0 +1,26 @@
+[Unit]
+Description=SLPP Server Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+ExecStart=/usr/local/bin/slppd run \
+  --listen 0.0.0.0:8443 \
+  --cert /etc/slpp/server.crt \
+  --key /etc/slpp/server.key \
+  --token-file /etc/slpp/tokens.json \
+  --control-socket /run/slppd.sock
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/slpp /run
+WorkingDirectory=/var/lib/slpp
+
+[Install]
+WantedBy=multi-user.target
