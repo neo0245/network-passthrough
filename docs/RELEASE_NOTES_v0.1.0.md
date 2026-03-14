@@ -12,6 +12,7 @@ Included deliverables:
 - TLS 1.3 + HTTP/2 transport
 - opaque bearer-token authentication
 - SOCKS5 client support
+- browser-like client fingerprint profiles for `chrome`, `firefox`, and `safari`
 - integration and transport tests
 
 ## Release Editions

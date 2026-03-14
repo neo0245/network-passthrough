@@ -264,3 +264,18 @@ func TestTunnelMalformedFrameClosesSession(t *testing.T) {
 		t.Fatal("timed out waiting for malformed frame failure")
 	}
 }
+
+func TestResolveBrowserProfile(t *testing.T) {
+	for _, name := range []string{"chrome", "firefox", "safari", ""} {
+		profile, err := transport.ResolveBrowserProfile(name)
+		if err != nil {
+			t.Fatalf("resolve profile %q: %v", name, err)
+		}
+		if profile.Name == "" || profile.Headers["User-Agent"] == "" {
+			t.Fatalf("profile %q missing user-agent: %#v", name, profile)
+		}
+	}
+	if _, err := transport.ResolveBrowserProfile("opera"); err == nil {
+		t.Fatal("expected unsupported browser profile error")
+	}
+}

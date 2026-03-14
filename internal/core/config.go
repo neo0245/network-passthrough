@@ -10,6 +10,7 @@ type ClientConfig struct {
 	Token           string
 	ListenSocks     string
 	UDPAssociate    string
+	BrowserProfile  string
 	InsecureSkipTLS bool
 	Heartbeat       time.Duration
 }

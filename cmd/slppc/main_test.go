@@ -32,15 +32,18 @@ func TestCheckClientMain(t *testing.T) {
 func TestPingMain(t *testing.T) {
 	server := testutil.StartServer(t)
 
-	out, err := pingMain(context.Background(), server.BaseURL, true)
+	out, err := pingMain(context.Background(), server.BaseURL, "chrome", true)
 	if err != nil {
 		t.Fatalf("pingMain: %v", err)
 	}
 	if out.Message != "200 OK" {
 		t.Fatalf("unexpected ping output: %#v", out)
 	}
-	if _, err := pingMain(context.Background(), "https://127.0.0.1:1", true); err == nil {
+	if _, err := pingMain(context.Background(), "https://127.0.0.1:1", "chrome", true); err == nil {
 		t.Fatal("expected unreachable ping error")
+	}
+	if _, err := pingMain(context.Background(), server.BaseURL, "opera", true); err == nil {
+		t.Fatal("expected unsupported fingerprint error")
 	}
 }
 
@@ -54,6 +57,7 @@ func TestConnectMainEstablishesSession(t *testing.T) {
 		done <- connectMain(ctx, core.ClientConfig{
 			ServerURL:       server.BaseURL,
 			Token:           server.TokenRecord.Token,
+			BrowserProfile:  "chrome",
 			InsecureSkipTLS: true,
 		})
 	}()
@@ -83,6 +87,7 @@ func TestSocks5MainTCPRelay(t *testing.T) {
 		ServerURL:       server.BaseURL,
 		Token:           server.TokenRecord.Token,
 		ListenAddr:      "127.0.0.1:0",
+		BrowserProfile:  "firefox",
 		InsecureSkipTLS: true,
 	})
 	if err != nil {
@@ -124,6 +129,7 @@ func TestSocks5MainUDPAssociate(t *testing.T) {
 		ServerURL:       server.BaseURL,
 		Token:           server.TokenRecord.Token,
 		ListenAddr:      "127.0.0.1:0",
+		BrowserProfile:  "safari",
 		InsecureSkipTLS: true,
 	})
 	if err != nil {

@@ -54,6 +54,7 @@ Start the local SOCKS5 proxy:
 slppc socks5 \
   --server https://127.0.0.1:8443 \
   --token YOUR_TOKEN \
+  --fingerprint chrome \
   --listen 127.0.0.1:1080 \
   --insecure
 ```
@@ -82,6 +83,12 @@ Applications can then use `127.0.0.1:1080` as a SOCKS5 proxy.
 - `stats`: print a local empty stats envelope placeholder
 - `version`: print the version
 
+Client commands that open or probe the tunnel also accept:
+
+- `--fingerprint chrome`
+- `--fingerprint firefox`
+- `--fingerprint safari`
+
 ## 4. TLS Notes
 
 - TLS 1.3 is required.
@@ -103,6 +110,7 @@ Server:
 Client:
 
 - server URL: `slppc ... --server https://host:port`
+- browser-like profile: `slppc ... --fingerprint chrome`
 - testing override: `slppc ... --insecure`
 
 ### Verification Requirement
@@ -115,7 +123,39 @@ If you require strict verification on both sides:
 
 That means this edition guarantees TLS 1.3 transport, but full operator-configurable mutual certificate verification is still a future enhancement.
 
-## 5. Token Management
+## 5. Browser-Like Fingerprint Profiles
+
+The client can shape outbound HTTP request headers to look more like a normal browser session. Available profiles:
+
+- `chrome`
+- `firefox`
+- `safari`
+
+Example:
+
+```bash
+slppc connect \
+  --server https://127.0.0.1:8443 \
+  --token YOUR_TOKEN \
+  --fingerprint firefox
+```
+
+This feature changes request headers such as:
+
+- `User-Agent`
+- `Accept`
+- `Accept-Language`
+- browser-specific `Sec-Fetch-*` and `Sec-CH-UA*` headers where applicable
+
+Important limitation:
+
+- this is not full browser impersonation
+- TLS still comes from Go's TLS stack, not Chrome/Firefox/Safari native TLS fingerprints
+- HTTP/2 behavior remains application-driven rather than a complete browser navigation model
+
+This feature is best understood as a browser-like transport profile, not a guarantee of indistinguishability from real browser traffic.
+
+## 6. Token Management
 
 Tokens are opaque bearer tokens stored in a JSON token file.
 
@@ -131,7 +171,7 @@ Revoke a token:
 slppd revoke-token --token-file tokens.json --id TOKEN_ID
 ```
 
-## 6. Control Socket
+## 7. Control Socket
 
 The server exposes a local control API over a Unix domain socket. Use it to query runtime stats:
 
@@ -139,7 +179,7 @@ The server exposes a local control API over a Unix domain socket. Use it to quer
 slppd stats --control-socket /tmp/slppd.sock --json
 ```
 
-## 7. Linux systemd Service
+## 8. Linux systemd Service
 
 A sample unit file is provided at:
 
@@ -171,7 +211,7 @@ sudo journalctl -u slppd -f
 sudo systemctl restart slppd
 ```
 
-## 8. SOCKS5 Usage
+## 9. SOCKS5 Usage
 
 SLPP supports:
 
@@ -180,7 +220,7 @@ SLPP supports:
 
 Typical desktop or CLI tools can route traffic through `slppc socks5` by pointing them at the local SOCKS5 listener.
 
-## 9. Supported Release Editions
+## 10. Supported Release Editions
 
 This first edition includes:
 
@@ -196,10 +236,11 @@ Each edition archive contains:
 - this user manual
 - release notes
 
-## 10. Known Limitations
+## 11. Known Limitations
 
 - The control-plane implementation is minimal.
 - The current Windows build is cross-compiled, but operational behavior should still be verified in a Windows environment before production use.
 - The release is CLI-first and intended for early adopters and testing.
 - Mutual TLS client-certificate authentication is not implemented.
 - The client does not yet expose a dedicated custom CA file option.
+- Browser fingerprint profiles shape headers only and do not fully reproduce native browser TLS fingerprints.

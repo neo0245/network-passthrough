@@ -2,6 +2,8 @@
 
 SLPP is a lightweight Go client/server tunnel that carries multiplexed TCP and UDP traffic over a persistent TLS 1.3 + HTTP/2 connection.
 
+The client also supports browser-like request header profiles for `chrome`, `firefox`, and `safari`.
+
 ## Binaries
 
 The CLI ships as two programs:

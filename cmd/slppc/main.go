@@ -58,6 +58,7 @@ func connectCmd(args []string) {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	serverURL := fs.String("server", "", "server URL")
 	token := fs.String("token", "", "bearer token")
+	fingerprint := fs.String("fingerprint", "chrome", "browser-like fingerprint profile: chrome, firefox, safari")
 	jsonOut := fs.Bool("json", false, "json output")
 	insecure := fs.Bool("insecure", false, "skip tls verification")
 	fs.Parse(args)
@@ -69,6 +70,7 @@ func connectCmd(args []string) {
 	if err := connectMain(runCtx, core.ClientConfig{
 		ServerURL:       *serverURL,
 		Token:           *token,
+		BrowserProfile:  *fingerprint,
 		InsecureSkipTLS: *insecure,
 	}); err != nil && runCtx.Err() == nil {
 		exitErr(err, *jsonOut)
@@ -234,6 +236,7 @@ func socks5Cmd(args []string) {
 	serverURL := fs.String("server", "", "server URL")
 	token := fs.String("token", "", "bearer token")
 	listen := fs.String("listen", "127.0.0.1:1080", "socks5 listen address")
+	fingerprint := fs.String("fingerprint", "chrome", "browser-like fingerprint profile: chrome, firefox, safari")
 	jsonOut := fs.Bool("json", false, "json output")
 	insecure := fs.Bool("insecure", false, "skip tls verification")
 	fs.Parse(args)
@@ -246,6 +249,7 @@ func socks5Cmd(args []string) {
 		ServerURL:       *serverURL,
 		Token:           *token,
 		ListenAddr:      *listen,
+		BrowserProfile:  *fingerprint,
 		InsecureSkipTLS: *insecure,
 	})
 	if err != nil && ctx.Err() == nil {
@@ -525,10 +529,11 @@ func checkCmd(args []string) {
 func pingCmd(args []string) {
 	fs := flag.NewFlagSet("ping", flag.ExitOnError)
 	serverURL := fs.String("server", "", "server URL")
+	fingerprint := fs.String("fingerprint", "chrome", "browser-like fingerprint profile: chrome, firefox, safari")
 	jsonOut := fs.Bool("json", false, "json output")
 	insecure := fs.Bool("insecure", false, "skip tls verification")
 	fs.Parse(args)
-	out, err := pingMain(context.Background(), *serverURL, *insecure)
+	out, err := pingMain(context.Background(), *serverURL, *fingerprint, *insecure)
 	if err != nil {
 		exitErr(err, *jsonOut)
 	}
@@ -589,6 +594,7 @@ type socks5Options struct {
 	ServerURL       string
 	Token           string
 	ListenAddr      string
+	BrowserProfile  string
 	InsecureSkipTLS bool
 }
 
@@ -616,6 +622,7 @@ func socks5Main(ctx context.Context, opts socks5Options) (api.OutputEnvelope, er
 	tunnel, err := transport.DialClientTunnel(ctx, core.ClientConfig{
 		ServerURL:       opts.ServerURL,
 		Token:           opts.Token,
+		BrowserProfile:  opts.BrowserProfile,
 		InsecureSkipTLS: opts.InsecureSkipTLS,
 	})
 	if err != nil {
@@ -662,9 +669,13 @@ func checkClientMain(serverURL, listen string) (api.OutputEnvelope, error) {
 	return api.OutputEnvelope{OK: true, Message: "configuration valid", Data: map[string]string{"server": serverURL, "listen": listen}}, nil
 }
 
-func pingMain(ctx context.Context, serverURL string, insecure bool) (api.OutputEnvelope, error) {
+func pingMain(ctx context.Context, serverURL string, fingerprint string, insecure bool) (api.OutputEnvelope, error) {
 	if serverURL == "" {
 		return api.OutputEnvelope{}, errors.New("--server is required")
+	}
+	profile, err := transport.ResolveBrowserProfile(fingerprint)
+	if err != nil {
+		return api.OutputEnvelope{}, err
 	}
 	client := &http.Client{
 		Timeout: 5 * time.Second,
@@ -677,6 +688,7 @@ func pingMain(ctx context.Context, serverURL string, insecure bool) (api.OutputE
 	if err != nil {
 		return api.OutputEnvelope{}, err
 	}
+	transport.ApplyBrowserProfile(req, profile)
 	resp, err := client.Do(req)
 	if err != nil {
 		return api.OutputEnvelope{}, err
