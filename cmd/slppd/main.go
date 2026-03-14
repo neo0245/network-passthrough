@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -63,43 +64,21 @@ func runServer(args []string) {
 	jsonOut := fs.Bool("json", false, "json output")
 	fs.Parse(args)
 
-	stats := core.NewStats()
-	store, err := auth.NewStore(*tokenFile)
-	if err != nil {
-		exitErr(err, *jsonOut)
-	}
-	handler := &transport.TunnelHandler{Validator: store, Stats: stats}
-	server := transport.NewHTTPServer(core.ServerConfig{
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	out, err := runServerMain(ctx, serverRunOptions{
 		ListenAddr:    *listen,
 		CertFile:      *certFile,
 		KeyFile:       *keyFile,
+		TokenFile:     *tokenFile,
 		ControlSocket: *controlSock,
-	}, handler)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	controlServer := control.NewServer(*controlSock, stats)
-	go func() {
-		if err := controlServer.Run(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("control server stopped", "err", err)
-		}
-	}()
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
+	})
 	if *jsonOut {
-		_ = json.NewEncoder(os.Stdout).Encode(api.OutputEnvelope{OK: true, Message: "server starting", Data: map[string]string{"listen": *listen}})
-	} else {
-		fmt.Printf("slppd listening on %s\n", *listen)
+		_ = json.NewEncoder(os.Stdout).Encode(out)
+	} else if out.Message != "" {
+		fmt.Println(out.Message)
 	}
-	if *certFile == "" || *keyFile == "" {
-		exitErr(fmt.Errorf("both --cert and --key are required"), *jsonOut)
-	}
-	if err := server.ListenAndServeTLS(*certFile, *keyFile); err != nil && ctx.Err() == nil {
+	if err != nil && ctx.Err() == nil {
 		exitErr(err, *jsonOut)
 	}
 }
@@ -110,11 +89,10 @@ func checkServer(args []string) {
 	tokenFile := fs.String("token-file", "tokens.json", "token store file")
 	jsonOut := fs.Bool("json", false, "json output")
 	fs.Parse(args)
-	_, err := auth.NewStore(*tokenFile)
+	out, err := checkServerMain(*listen, *tokenFile)
 	if err != nil {
 		exitErr(err, *jsonOut)
 	}
-	out := api.OutputEnvelope{OK: true, Message: "configuration valid", Data: map[string]string{"listen": *listen, "token_file": *tokenFile}}
 	printEnvelope(out, *jsonOut)
 }
 
@@ -124,15 +102,11 @@ func genToken(args []string) {
 	ttl := fs.Duration("ttl", 24*time.Hour, "token ttl")
 	jsonOut := fs.Bool("json", false, "json output")
 	fs.Parse(args)
-	store, err := auth.NewStore(*tokenFile)
+	out, err := genTokenMain(*tokenFile, *ttl)
 	if err != nil {
 		exitErr(err, *jsonOut)
 	}
-	rec, err := store.Generate(*ttl)
-	if err != nil {
-		exitErr(err, *jsonOut)
-	}
-	printEnvelope(api.OutputEnvelope{OK: true, Data: rec}, *jsonOut)
+	printEnvelope(out, *jsonOut)
 }
 
 func revokeToken(args []string) {
@@ -144,14 +118,11 @@ func revokeToken(args []string) {
 	if *id == "" {
 		exitErr(fmt.Errorf("--id is required"), *jsonOut)
 	}
-	store, err := auth.NewStore(*tokenFile)
+	out, err := revokeTokenMain(*tokenFile, *id)
 	if err != nil {
 		exitErr(err, *jsonOut)
 	}
-	if err := store.Revoke(*id); err != nil {
-		exitErr(err, *jsonOut)
-	}
-	printEnvelope(api.OutputEnvelope{OK: true, Message: "token revoked"}, *jsonOut)
+	printEnvelope(out, *jsonOut)
 }
 
 func printStats(args []string) {
@@ -159,23 +130,8 @@ func printStats(args []string) {
 	socket := fs.String("control-socket", "/tmp/slppd.sock", "unix socket for control API")
 	jsonOut := fs.Bool("json", false, "json output")
 	fs.Parse(args)
-	client := &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", *socket)
-			},
-		},
-	}
-	resp, err := client.Get("http://unix/stats")
+	out, err := statsMain(context.Background(), *socket)
 	if err != nil {
-		stats := core.NewStats().Snapshot()
-		printEnvelope(api.OutputEnvelope{OK: true, Message: "control socket unavailable, showing empty snapshot", Data: stats}, *jsonOut)
-		return
-	}
-	defer resp.Body.Close()
-	var out api.OutputEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		exitErr(err, *jsonOut)
 	}
 	printEnvelope(out, *jsonOut)
@@ -211,4 +167,105 @@ func exitErr(err error, asJSON bool) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 	os.Exit(1)
+}
+
+type serverRunOptions struct {
+	ListenAddr    string
+	CertFile      string
+	KeyFile       string
+	TokenFile     string
+	ControlSocket string
+}
+
+func runServerMain(ctx context.Context, opts serverRunOptions) (api.OutputEnvelope, error) {
+	if opts.CertFile == "" || opts.KeyFile == "" {
+		return api.OutputEnvelope{}, fmt.Errorf("both --cert and --key are required")
+	}
+
+	stats := core.NewStats()
+	store, err := auth.NewStore(opts.TokenFile)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	handler := &transport.TunnelHandler{Validator: store, Stats: stats}
+	server := transport.NewHTTPServer(core.ServerConfig{
+		ListenAddr:    opts.ListenAddr,
+		CertFile:      opts.CertFile,
+		KeyFile:       opts.KeyFile,
+		ControlSocket: opts.ControlSocket,
+	}, handler)
+	controlServer := control.NewServer(opts.ControlSocket, stats)
+	go func() {
+		if err := controlServer.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("control server stopped", "err", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	out := api.OutputEnvelope{OK: true, Message: fmt.Sprintf("slppd listening on %s", opts.ListenAddr), Data: map[string]string{"listen": opts.ListenAddr}}
+	err = server.ListenAndServeTLS(opts.CertFile, opts.KeyFile)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func checkServerMain(listen, tokenFile string) (api.OutputEnvelope, error) {
+	if _, err := auth.NewStore(tokenFile); err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	return api.OutputEnvelope{OK: true, Message: "configuration valid", Data: map[string]string{"listen": listen, "token_file": tokenFile}}, nil
+}
+
+func genTokenMain(tokenFile string, ttl time.Duration) (api.OutputEnvelope, error) {
+	store, err := auth.NewStore(tokenFile)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	rec, err := store.Generate(ttl)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	return api.OutputEnvelope{OK: true, Data: rec}, nil
+}
+
+func revokeTokenMain(tokenFile, id string) (api.OutputEnvelope, error) {
+	store, err := auth.NewStore(tokenFile)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	if err := store.Revoke(id); err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	return api.OutputEnvelope{OK: true, Message: "token revoked"}, nil
+}
+
+func statsMain(ctx context.Context, socket string) (api.OutputEnvelope, error) {
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/stats", nil)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		stats := core.NewStats().Snapshot()
+		return api.OutputEnvelope{OK: true, Message: "control socket unavailable, showing empty snapshot", Data: stats}, nil
+	}
+	defer resp.Body.Close()
+	var out api.OutputEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	return out, nil
 }

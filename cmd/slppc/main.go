@@ -64,31 +64,16 @@ func connectCmd(args []string) {
 	if *serverURL == "" || *token == "" {
 		exitErr(errors.New("--server and --token are required"), *jsonOut)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	tunnel, err := transport.DialClientTunnel(ctx, core.ClientConfig{
+	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := connectMain(runCtx, core.ClientConfig{
 		ServerURL:       *serverURL,
 		Token:           *token,
 		InsecureSkipTLS: *insecure,
-	})
-	if err != nil {
+	}); err != nil && runCtx.Err() == nil {
 		exitErr(err, *jsonOut)
 	}
-	defer tunnel.ReadCloser.Close()
-	defer tunnel.WriteCloser.Close()
-	sess := core.NewSession(uint32(time.Now().UnixNano()), tunnel.ReadCloser, tunnel.WriteCloser, &noopHandler{}, core.NewStats(), transport.DefaultHeartbeat())
-	authFrame, err := transport.NewAuthFrame(*token)
-	if err != nil {
-		exitErr(err, *jsonOut)
-	}
-	if err := sess.QueueControl(authFrame); err != nil {
-		exitErr(err, *jsonOut)
-	}
-	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() { _ = sess.Run(runCtx) }()
 	printEnvelope(api.OutputEnvelope{OK: true, Message: "tunnel connected"}, *jsonOut)
-	<-runCtx.Done()
 }
 
 type tunnelClient struct {
@@ -257,41 +242,16 @@ func socks5Cmd(args []string) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	tunnel, err := transport.DialClientTunnel(ctx, core.ClientConfig{
+	out, err := socks5Main(ctx, socks5Options{
 		ServerURL:       *serverURL,
 		Token:           *token,
+		ListenAddr:      *listen,
 		InsecureSkipTLS: *insecure,
 	})
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		exitErr(err, *jsonOut)
 	}
-	client := newTunnelClient(nil)
-	session := core.NewSession(uint32(time.Now().UnixNano()), tunnel.ReadCloser, tunnel.WriteCloser, client, core.NewStats(), transport.DefaultHeartbeat())
-	client.session = session
-	authFrame, err := transport.NewAuthFrame(*token)
-	if err != nil {
-		exitErr(err, *jsonOut)
-	}
-	if err := session.QueueControl(authFrame); err != nil {
-		exitErr(err, *jsonOut)
-	}
-	go func() { _ = session.Run(ctx) }()
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		exitErr(err, *jsonOut)
-	}
-	defer ln.Close()
-	printEnvelope(api.OutputEnvelope{OK: true, Message: "SOCKS5 listening", Data: map[string]string{"listen": *listen}}, *jsonOut)
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-		go handleSocksConn(ctx, conn, client)
-	}
+	printEnvelope(out, *jsonOut)
 }
 
 func handleSocksConn(ctx context.Context, conn net.Conn, client *tunnelClient) {
@@ -555,13 +515,11 @@ func checkCmd(args []string) {
 	listen := fs.String("listen", "127.0.0.1:1080", "listen address")
 	jsonOut := fs.Bool("json", false, "json output")
 	fs.Parse(args)
-	if *serverURL == "" {
-		exitErr(errors.New("--server is required"), *jsonOut)
-	}
-	if _, err := url.Parse(*serverURL); err != nil {
+	out, err := checkClientMain(*serverURL, *listen)
+	if err != nil {
 		exitErr(err, *jsonOut)
 	}
-	printEnvelope(api.OutputEnvelope{OK: true, Message: "configuration valid", Data: map[string]string{"server": *serverURL, "listen": *listen}}, *jsonOut)
+	printEnvelope(out, *jsonOut)
 }
 
 func pingCmd(args []string) {
@@ -570,22 +528,11 @@ func pingCmd(args []string) {
 	jsonOut := fs.Bool("json", false, "json output")
 	insecure := fs.Bool("insecure", false, "skip tls verification")
 	fs.Parse(args)
-	if *serverURL == "" {
-		exitErr(errors.New("--server is required"), *jsonOut)
-	}
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig:  transportTLSConfig(*insecure),
-			ForceAttemptHTTP2: true,
-		},
-	}
-	resp, err := client.Get(*serverURL + "/healthz")
+	out, err := pingMain(context.Background(), *serverURL, *insecure)
 	if err != nil {
 		exitErr(err, *jsonOut)
 	}
-	defer resp.Body.Close()
-	printEnvelope(api.OutputEnvelope{OK: true, Message: resp.Status}, *jsonOut)
+	printEnvelope(out, *jsonOut)
 }
 
 func statsCmd(args []string) {
@@ -636,4 +583,104 @@ func exitErr(err error, asJSON bool) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 	os.Exit(1)
+}
+
+type socks5Options struct {
+	ServerURL       string
+	Token           string
+	ListenAddr      string
+	InsecureSkipTLS bool
+}
+
+func connectMain(ctx context.Context, cfg core.ClientConfig) error {
+	tunnel, err := transport.DialClientTunnel(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer tunnel.ReadCloser.Close()
+	defer tunnel.WriteCloser.Close()
+	sess := core.NewSession(uint32(time.Now().UnixNano()), tunnel.ReadCloser, tunnel.WriteCloser, &noopHandler{}, core.NewStats(), transport.DefaultHeartbeat())
+	authFrame, err := transport.NewAuthFrame(cfg.Token)
+	if err != nil {
+		return err
+	}
+	if err := sess.QueueControl(authFrame); err != nil {
+		return err
+	}
+	go func() { _ = sess.Run(ctx) }()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func socks5Main(ctx context.Context, opts socks5Options) (api.OutputEnvelope, error) {
+	tunnel, err := transport.DialClientTunnel(ctx, core.ClientConfig{
+		ServerURL:       opts.ServerURL,
+		Token:           opts.Token,
+		InsecureSkipTLS: opts.InsecureSkipTLS,
+	})
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	client := newTunnelClient(nil)
+	session := core.NewSession(uint32(time.Now().UnixNano()), tunnel.ReadCloser, tunnel.WriteCloser, client, core.NewStats(), transport.DefaultHeartbeat())
+	client.session = session
+	authFrame, err := transport.NewAuthFrame(opts.Token)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	if err := session.QueueControl(authFrame); err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	go func() { _ = session.Run(ctx) }()
+	ln, err := net.Listen("tcp", opts.ListenAddr)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleSocksConn(ctx, conn, client)
+		}
+	}()
+	return api.OutputEnvelope{OK: true, Message: "SOCKS5 listening", Data: map[string]string{"listen": ln.Addr().String()}}, nil
+}
+
+func checkClientMain(serverURL, listen string) (api.OutputEnvelope, error) {
+	if serverURL == "" {
+		return api.OutputEnvelope{}, errors.New("--server is required")
+	}
+	if _, err := url.Parse(serverURL); err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	return api.OutputEnvelope{OK: true, Message: "configuration valid", Data: map[string]string{"server": serverURL, "listen": listen}}, nil
+}
+
+func pingMain(ctx context.Context, serverURL string, insecure bool) (api.OutputEnvelope, error) {
+	if serverURL == "" {
+		return api.OutputEnvelope{}, errors.New("--server is required")
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:   transportTLSConfig(insecure),
+			ForceAttemptHTTP2: true,
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return api.OutputEnvelope{}, err
+	}
+	defer resp.Body.Close()
+	return api.OutputEnvelope{OK: true, Message: resp.Status}, nil
 }

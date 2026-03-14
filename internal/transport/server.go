@@ -124,7 +124,7 @@ func (h *serverSessionHandler) HandleFrame(ctx context.Context, s *core.Session,
 		if err != nil {
 			return err
 		}
-		if time.Since(time.UnixMilli(int64(dg.SentMS))) > time.Duration(dg.DeadlineMS)*time.Millisecond {
+		if elapsedMillis32(uint32(time.Now().UnixMilli()), dg.SentMS) > uint32(dg.DeadlineMS) {
 			h.stats.AddExpiredUDP()
 			return nil
 		}
@@ -138,6 +138,13 @@ func (h *serverSessionHandler) HandleFrame(ctx context.Context, s *core.Session,
 	default:
 		return nil
 	}
+}
+
+func elapsedMillis32(now, then uint32) uint32 {
+	if now >= then {
+		return now - then
+	}
+	return (^uint32(0) - then) + now + 1
 }
 
 func NewHTTPServer(cfg core.ServerConfig, tunnelHandler *TunnelHandler) *http.Server {
